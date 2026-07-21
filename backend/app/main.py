@@ -5,9 +5,12 @@ import io
 import os
 from collections import defaultdict
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from fastapi import FastAPI, Depends, HTTPException, Header, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
 from . import models, schemas, validation, permissions
@@ -772,3 +775,21 @@ def get_audit_log(entity_type: str | None = None, entity_id: int | None = None,
     if entity_id:
         q = q.filter_by(entity_id=entity_id)
     return q.order_by(models.AuditLog.changed_at.desc()).limit(200).all()
+
+
+# ---------- Frontend static serving (single-process deployment) ----------
+# `npm run build` output, mounted so uvicorn serves the SPA on the same port
+# as the API — no separate frontend dev server needed. Must stay last: routes
+# registered above take precedence over this catch-all.
+
+FRONTEND_DIST = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
+
+if FRONTEND_DIST.is_dir():
+    app.mount("/assets", StaticFiles(directory=FRONTEND_DIST / "assets"), name="frontend-assets")
+
+    @app.get("/{full_path:path}")
+    def serve_frontend(full_path: str):
+        candidate = FRONTEND_DIST / full_path
+        if full_path and candidate.is_file():
+            return FileResponse(candidate)
+        return FileResponse(FRONTEND_DIST / "index.html")

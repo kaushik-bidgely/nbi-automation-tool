@@ -1,8 +1,11 @@
 // Configurable via a build-time env var so the same bundle can point at a
 // deployed backend instead of hardcoding localhost — set VITE_API_BASE_URL
 // (e.g. in a .env file, see .env.example) before building for anywhere other
-// than local dev.
-const BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
+// than local dev. Explicitly set to "" (as build.sh does) for a single-origin
+// deployment where uvicorn serves the built frontend itself — relative paths
+// then resolve to the same host:port automatically. `??`, not `||`: an
+// explicit empty string must stick, only a truly unset var falls back.
+const BASE = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
 
 const TOKEN_KEY = "nbi_token";
 export const getToken = () => localStorage.getItem(TOKEN_KEY);
