@@ -157,7 +157,9 @@ export default function Dashboard() {
         <Stack spacing={2}>
           <Typography variant="subtitle2">Quick links</Typography>
           <Stack direction="row" spacing={2} flexWrap="wrap">
-            {role === "admin" && <QuickLink to="/merge" icon={<CallMergeIcon fontSize="small" />} label="Merge Action + Insight" />}
+            {role === "admin" && (
+              <QuickLink to="/interactions" icon={<CallMergeIcon fontSize="small" />} label="Interactions" />
+            )}
             <QuickLink to="/audit-log" icon={<HistoryIcon fontSize="small" />} label="Audit Log" />
             {role === "admin" && <QuickLink to="/users" icon={<GroupOutlinedIcon fontSize="small" />} label="Manage Users" />}
           </Stack>

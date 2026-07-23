@@ -13,30 +13,51 @@ export default function CreatePilotDialog({ open, onClose }: { open: boolean; on
   const [mode, setMode] = useState<"clone" | "upload">("clone");
   const [actionsFile, setActionsFile] = useState<File | null>(null);
   const [insightsFile, setInsightsFile] = useState<File | null>(null);
+  const [interactionsFile, setInteractionsFile] = useState<File | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const reset = () => {
-    setCode(""); setName(""); setMode("clone"); setActionsFile(null); setInsightsFile(null); setError(null);
+    setCode(""); setName(""); setMode("clone");
+    setActionsFile(null); setInsightsFile(null); setInteractionsFile(null); setError(null);
   };
 
   const submit = async () => {
     setError(null);
     setBusy(true);
+    let createdPilotId: number | null = null;
+    const succeeded: string[] = [];
     try {
       const pilot = await api.createPilot(code, name);
+      createdPilotId = pilot.id;
       if (mode === "clone") {
         await api.cloneFromMaster(pilot.id);
       } else {
-        if (actionsFile) await api.uploadActionsSheet(pilot.id, actionsFile);
-        if (insightsFile) await api.uploadInsightsSheet(pilot.id, insightsFile);
+        if (actionsFile) { await api.uploadActionsSheet(pilot.id, actionsFile); succeeded.push("Actions"); }
+        if (insightsFile) { await api.uploadInsightsSheet(pilot.id, insightsFile); succeeded.push("Insights"); }
+        if (interactionsFile) { await api.uploadInteractionsSheet(pilot.id, interactionsFile); succeeded.push("Interactions"); }
       }
       refreshPilots();
       setPilotId(pilot.id);
       reset();
       onClose();
     } catch (e: any) {
-      setError(String(e.message));
+      let detail: unknown;
+      try { detail = JSON.parse(e.message); } catch { detail = e.message; }
+      const baseMsg = typeof detail === "string" ? detail : String(e.message);
+      if (succeeded.length === 0) {
+        // Nothing of value was created yet — safe to clean up, same as
+        // before, so retrying with the same code doesn't 409.
+        setError(baseMsg);
+        if (createdPilotId !== null) {
+          try { await api.deletePilot(createdPilotId); refreshPilots(); } catch { /* best-effort cleanup */ }
+        }
+      } else {
+        // Partial success — deleting the pilot here would silently discard
+        // real imports. Keep it and tell the user exactly what to redo.
+        setError(`${baseMsg} (${succeeded.join(", ")} already imported successfully — pilot was kept; re-upload just the failed file from the Pilots page.)`);
+        refreshPilots();
+      }
     } finally {
       setBusy(false);
     }
@@ -66,8 +87,16 @@ export default function CreatePilotDialog({ open, onClose }: { open: boolean; on
                 {insightsFile ? insightsFile.name : "Choose Insights sheet (.xlsx)"}
                 <input type="file" hidden accept=".xlsx" onChange={(e) => setInsightsFile(e.target.files?.[0] ?? null)} />
               </Button>
+              <Button component="label" variant="outlined" size="small">
+                {interactionsFile ? interactionsFile.name : "Choose Interactions sheet (.csv) — optional"}
+                <input type="file" hidden accept=".csv" onChange={(e) => setInteractionsFile(e.target.files?.[0] ?? null)} />
+              </Button>
               <Typography variant="caption" color="text.secondary">
-                Each file must have the sheet named "Actions" or "Insights" respectively, matching the master template's column layout.
+                If an Actions/Insights workbook has only one sheet, it's used regardless of its name — if it has
+                multiple sheets, one must be named exactly "Actions"/"Insights" so we know which to read. Both must
+                match the master template's column layout. The Interactions file (if any) is a CSV in the same
+                20-column format this app's own interaction export produces — rows are matched against the
+                Actions/Insights just uploaded above.
               </Typography>
             </Stack>
           )}

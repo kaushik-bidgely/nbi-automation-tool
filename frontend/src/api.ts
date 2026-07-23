@@ -73,6 +73,8 @@ export const api = {
     upload(`/api/pilots/${pilotId}/upload/actions`, file),
   uploadInsightsSheet: (pilotId: number, file: File) =>
     upload(`/api/pilots/${pilotId}/upload/insights`, file),
+  uploadInteractionsSheet: (pilotId: number, file: File) =>
+    upload(`/api/pilots/${pilotId}/upload/interactions`, file),
   deletePilot: (pilotId: number) => request(`/api/pilots/${pilotId}`, { method: "DELETE" }),
   listActions: (pilotId: number) => request(`/api/pilots/${pilotId}/actions`),
   getAction: (id: number) => request(`/api/actions/${id}`),
@@ -85,7 +87,8 @@ export const api = {
   deleteAction: (id: number) => request(`/api/actions/${id}`, { method: "DELETE" }),
   publishActions: (pilotId: number, ids: number[]) =>
     request(`/api/pilots/${pilotId}/actions/publish`, { method: "POST", body: JSON.stringify({ ids }) }),
-  exportActionsSheet: (pilotId: number) => request(`/api/pilots/${pilotId}/actions/export`),
+  exportActionsSheet: (pilotId: number, statuses: string[]) =>
+    request(`/api/pilots/${pilotId}/actions/export?statuses=${statuses.join(",")}`),
 
   listInsights: (pilotId: number) => request(`/api/pilots/${pilotId}/insights`),
   getInsight: (id: number) => request(`/api/insights/${id}`),
@@ -98,7 +101,8 @@ export const api = {
   deleteInsight: (id: number) => request(`/api/insights/${id}`, { method: "DELETE" }),
   publishInsights: (pilotId: number, ids: number[]) =>
     request(`/api/pilots/${pilotId}/insights/publish`, { method: "POST", body: JSON.stringify({ ids }) }),
-  exportInsightsSheet: (pilotId: number) => request(`/api/pilots/${pilotId}/insights/export`),
+  exportInsightsSheet: (pilotId: number, statuses: string[]) =>
+    request(`/api/pilots/${pilotId}/insights/export?statuses=${statuses.join(",")}`),
 
   listInteractions: (pilotId: number) => request(`/api/pilots/${pilotId}/interactions`),
   createInteraction: (actionItemId: number, insightItemId: number) =>
@@ -106,7 +110,16 @@ export const api = {
       "/api/interactions",
       { method: "POST", body: JSON.stringify({ action_item_id: actionItemId, insight_item_id: insightItemId }) },
     ),
-  exportInteraction: (id: number) => request(`/api/interactions/${id}/export`),
+  bulkMergeInteractions: (pilotId: number) =>
+    request(`/api/pilots/${pilotId}/interactions/bulk-merge`, { method: "POST" }),
+  updateInteraction: (id: number, body: { insight_semantic?: string; insight_text?: string; action?: string }) =>
+    request(`/api/interactions/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  submitInteraction: (id: number) => request(`/api/interactions/${id}/submit`, { method: "POST" }),
+  unlockInteraction: (id: number) => request(`/api/interactions/${id}/unlock`, { method: "POST" }),
+  publishInteractions: (pilotId: number, ids: number[]) =>
+    request(`/api/pilots/${pilotId}/interactions/publish`, { method: "POST", body: JSON.stringify({ ids }) }),
+  exportInteractionsSheet: (pilotId: number, statuses: string[]) =>
+    request(`/api/pilots/${pilotId}/interactions/export?statuses=${statuses.join(",")}`),
   unmergeInteraction: (id: number) => request(`/api/interactions/${id}`, { method: "DELETE" }),
 
   auditLog: (entityType?: string, entityId?: number) => {

@@ -15,6 +15,7 @@ import { useRole, usePermissions } from "../AuthContext";
 import type { PermissionMap } from "../AuthContext";
 import { usePilot } from "../PilotContext";
 import EditableCell from "../EditableCell";
+import DownloadSheetDialog from "../DownloadSheetDialog";
 import { INSIGHT_EMAIL_FIELDS, INSIGHT_PAPER_FIELDS, INSIGHT_CHAR_LIMITS } from "../fieldGroups";
 import { downloadCsv } from "../downloadCsv";
 
@@ -59,10 +60,16 @@ const InsightRow = memo(function InsightRow({
   }, [insight]);
 
   const locked = values.status === "published";
-  const isEditable = (field: string) => !locked && permissions[field] === "edit";
+  // Selected rows are meant for a bulk status move, not simultaneous content
+  // edits — editing a Ready-for-QA row silently reverts it to Draft, which
+  // would undermine a bulk "move all selected to Ready for QA" in progress.
+  const isEditable = (field: string) => !locked && !selected && permissions[field] === "edit";
   const canDelete = role === "admin" || (role === "tpm_csm" && values.status === "draft");
   const canUnlock = locked && (role === "admin" || role === "tpm_csm");
   const canSubmit = values.status === "draft" || values.status === "modified";
+  const overLimit = Object.entries(dirty).some(
+    ([field, value]) => INSIGHT_CHAR_LIMITS[field] && value.length > INSIGHT_CHAR_LIMITS[field],
+  );
 
   const onChange = (field: string, value: string) => {
     setValues((v) => ({ ...v, [field]: value }));
@@ -70,7 +77,7 @@ const InsightRow = memo(function InsightRow({
   };
 
   const save = async () => {
-    if (Object.keys(dirty).length === 0) return;
+    if (Object.keys(dirty).length === 0 || overLimit) return;
     setSaving(true);
     try {
       const updated = await api.updateInsight(insight.id, dirty);
@@ -93,7 +100,7 @@ const InsightRow = memo(function InsightRow({
   };
 
   const changeStatus = async (newStatus: string) => {
-    if (newStatus === values.status || newStatus !== "ready_for_qa" || !canSubmit) return;
+    if (newStatus === values.status || newStatus !== "ready_for_qa" || !canSubmit || overLimit) return;
     setSubmittingStatus(true);
     try {
       await api.submitInsight(insight.id);
@@ -118,11 +125,13 @@ const InsightRow = memo(function InsightRow({
       <TableCell>
         <Stack direction="row" alignItems="center" spacing={0.5}>
           <span>{values.insight_id}</span>
-          <Tooltip title="Open full editor">
-            <IconButton size="small" onClick={() => onOpen(insight.id)}>
-              <OpenInNewIcon fontSize="inherit" />
-            </IconButton>
-          </Tooltip>
+          {role !== "utility" && (
+            <Tooltip title="Open full editor">
+              <IconButton size="small" onClick={() => onOpen(insight.id)}>
+                <OpenInNewIcon fontSize="inherit" />
+              </IconButton>
+            </Tooltip>
+          )}
         </Stack>
       </TableCell>
       <TableCell>{values.appliance}</TableCell>
@@ -133,24 +142,29 @@ const InsightRow = memo(function InsightRow({
             value={values[f] ?? ""}
             editable={isEditable(f)}
             limit={INSIGHT_CHAR_LIMITS[f]}
+            dirty={f in dirty}
             onChange={(v) => onChange(f, v)}
           />
         </TableCell>
       ))}
       <TableCell>
         <Stack direction="row" spacing={0.5} alignItems="center">
-          <Select
-            size="small" variant="standard" disableUnderline value={values.status}
-            disabled={submittingStatus} onChange={(e) => changeStatus(e.target.value)}
-            renderValue={(v) => <Chip size="small" label={String(v).replace(/_/g, " ")} color={statusColor[v as string]} />}
-            sx={{ minWidth: 130 }}
-          >
-            <MenuItem value="draft" disabled={values.status !== "draft"}>Draft</MenuItem>
-            <MenuItem value="ready_for_qa" disabled={values.status !== "ready_for_qa" && !canSubmit}>Ready for QA</MenuItem>
-            <MenuItem value="published" disabled={values.status !== "published"}>Published</MenuItem>
-            <MenuItem value="modified" disabled={values.status !== "modified"}>Modified</MenuItem>
-          </Select>
-          {values.merged && <Chip size="small" label="merged" variant="outlined" />}
+          <Tooltip title={overLimit ? "Over the character limit — fix before changing status" : ""}>
+            <span>
+              <Select
+                size="small" variant="standard" disableUnderline value={values.status}
+                disabled={submittingStatus || overLimit} onChange={(e) => changeStatus(e.target.value)}
+                renderValue={(v) => <Chip size="small" label={String(v).replace(/_/g, " ")} color={statusColor[v as string]} />}
+                sx={{ minWidth: 130 }}
+              >
+                <MenuItem value="draft" disabled={values.status !== "draft"}>Draft</MenuItem>
+                <MenuItem value="ready_for_qa" disabled={values.status !== "ready_for_qa" && !canSubmit}>Ready for QA</MenuItem>
+                <MenuItem value="published" disabled={values.status !== "published"}>Published</MenuItem>
+                <MenuItem value="modified" disabled={values.status !== "modified"}>Modified</MenuItem>
+              </Select>
+            </span>
+          </Tooltip>
+          {role === "admin" && values.merged && <Chip size="small" label="merged" variant="outlined" />}
         </Stack>
       </TableCell>
       <TableCell>
@@ -161,9 +175,13 @@ const InsightRow = memo(function InsightRow({
             </IconButton>
           </Tooltip>
         ) : (
-          <IconButton size="small" color="primary" disabled={!Object.keys(dirty).length || saving} onClick={save}>
-            <SaveIcon fontSize="small" />
-          </IconButton>
+          <Tooltip title={overLimit ? "Over the character limit — fix before saving" : ""}>
+            <span>
+              <IconButton size="small" color="primary" disabled={!Object.keys(dirty).length || saving || overLimit} onClick={save}>
+                <SaveIcon fontSize="small" />
+              </IconButton>
+            </span>
+          </Tooltip>
         )}
         {canDelete && (
           <IconButton size="small" onClick={() => onDelete(values)}>
@@ -190,7 +208,7 @@ export default function InsightsList() {
   const [deleteTarget, setDeleteTarget] = useState<Insight | null>(null);
   const [bulkSubmitting, setBulkSubmitting] = useState(false);
   const [publishing, setPublishing] = useState(false);
-  const [exporting, setExporting] = useState(false);
+  const [downloadOpen, setDownloadOpen] = useState(false);
 
   const load = () => { if (pilotId) api.listInsights(pilotId).then(setInsights); };
   useEffect(load, [pilotId]);
@@ -220,6 +238,10 @@ export default function InsightsList() {
       if (next.has(id)) next.delete(id); else next.add(id);
       return next;
     });
+  };
+
+  const toggleSelectAll = () => {
+    setSelected((s) => (filtered.every((i) => s.has(i.id)) ? new Set() : new Set(filtered.map((i) => i.id))));
   };
 
   const submitSelected = async () => {
@@ -271,17 +293,10 @@ export default function InsightsList() {
     }
   };
 
-  const exportSheet = async () => {
+  const downloadSheet = async (statuses: string[]) => {
     if (!pilotId) return;
-    setExporting(true);
-    try {
-      const res = await api.exportInsightsSheet(pilotId);
-      downloadCsv(res.filename, res.csv);
-    } catch (e: any) {
-      setErrorMsg(`Couldn't export: ${String(e.message)}`);
-    } finally {
-      setExporting(false);
-    }
+    const res = await api.exportInsightsSheet(pilotId, statuses);
+    downloadCsv(res.filename, res.csv);
   };
 
   const filtered = insights
@@ -289,6 +304,8 @@ export default function InsightsList() {
     .filter((i) => `${i.insight_id} ${i.appliance} ${i.insight_semantic}`.toLowerCase().includes(filter.toLowerCase()));
 
   const fields = FIELDS_BY_CHANNEL[channel].filter((f) => permissions[f] !== "none");
+  const allVisibleSelected = filtered.length > 0 && filtered.every((i) => selected.has(i.id));
+  const someVisibleSelected = filtered.some((i) => selected.has(i.id));
 
   return (
     <Stack spacing={2}>
@@ -317,8 +334,8 @@ export default function InsightsList() {
           <ToggleButton value="paper">Paper (2 fields)</ToggleButton>
         </ToggleButtonGroup>
         {role === "admin" && (
-          <Button size="small" variant="outlined" disabled={exporting} onClick={exportSheet}>
-            Download Sheet (Ready for QA+)
+          <Button size="small" variant="outlined" onClick={() => setDownloadOpen(true)}>
+            Download Sheet
           </Button>
         )}
         {selected.size > 0 && (
@@ -338,7 +355,15 @@ export default function InsightsList() {
         <Table size="small" sx={{ minWidth: 1000 }}>
           <TableHead>
             <TableRow>
-              <TableCell padding="checkbox" />
+              <TableCell padding="checkbox">
+                <Tooltip title="Select all — content edits are disabled for selected rows while you move their status in bulk">
+                  <Checkbox
+                    size="small" checked={allVisibleSelected}
+                    indeterminate={someVisibleSelected && !allVisibleSelected}
+                    onChange={toggleSelectAll}
+                  />
+                </Tooltip>
+              </TableCell>
               <TableCell>Insight ID</TableCell>
               <TableCell>Appliance</TableCell>
               <TableCell>Fuel</TableCell>
@@ -381,6 +406,7 @@ export default function InsightsList() {
           <Button color="error" onClick={confirmDelete}>Delete</Button>
         </DialogActions>
       </Dialog>
+      <DownloadSheetDialog open={downloadOpen} onClose={() => setDownloadOpen(false)} onDownload={downloadSheet} />
     </Stack>
   );
 }

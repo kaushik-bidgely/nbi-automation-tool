@@ -19,8 +19,8 @@ type FieldSchemaEntry = {
   shown_in_ui: boolean;
 };
 
-type Schema = { actions: FieldSchemaEntry[]; insights: FieldSchemaEntry[] };
-type TabKey = "actions" | "insights";
+type Schema = { actions: FieldSchemaEntry[]; insights: FieldSchemaEntry[]; interactions: FieldSchemaEntry[] };
+type TabKey = "actions" | "insights" | "interactions";
 
 const categoryColor: Record<string, "primary" | "secondary" | "default" | "success"> = {
   content: "primary", image: "secondary", internal: "default", generated: "success",
@@ -140,6 +140,7 @@ export default function SchemaReference() {
       <Tabs value={tab} onChange={(_, v: TabKey) => setTab(v)}>
         <Tab value="actions" label={`Actions (${schema.actions.length})`} />
         <Tab value="insights" label={`Insights (${schema.insights.length})`} />
+        <Tab value="interactions" label={`Interactions (${schema.interactions.length})`} />
       </Tabs>
       <TextField
         size="small" label="Filter" value={filter} onChange={(e) => setFilter(e.target.value)}

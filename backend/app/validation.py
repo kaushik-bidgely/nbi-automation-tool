@@ -2,6 +2,7 @@
 Validation rules lifted directly from limits already written into the master
 sheet's column headers — not invented. See Old NBI Automation Tool.md.
 """
+from __future__ import annotations
 
 ACTION_CHAR_LIMITS = {
     "short_desc": 110,
@@ -44,6 +45,44 @@ def validate_insight(insight) -> list[str]:
         if not getattr(insight, field):
             issues.append(f"'{field}' is required before submit")
     return issues
+
+
+ACTION_FIELD_TYPES: dict[str, type] = {
+    "diy": bool, "selfie": bool,
+    "strike_low": int, "strike_high": int,
+    "income_level": list, "ownership": list, "season": list, "persona": list,
+}
+
+INSIGHT_FIELD_TYPES: dict[str, type] = {
+    "generic_insight": bool,
+    "min_value": int, "max_value": int,
+    "season": list, "tou_period": list,
+}
+
+
+def validate_field_type(field: str, value, type_map: dict) -> str | None:
+    """Returns an error string if value's type doesn't match what the column
+    behind `field` expects, else None — every editable field defaults to
+    plain string unless listed in type_map. Guards the generic PATCH
+    endpoint's setattr() against type-confusion writes (e.g. a raw string
+    into a JSON-list column), which SQLAlchemy/SQLite won't reject on their
+    own and which only surfaces later as a 500 on the *next* read, after the
+    bad value is already committed."""
+    if value is None:
+        return None
+    expected = type_map.get(field, str)
+    if expected is bool:
+        if not isinstance(value, bool):
+            return f"'{field}' expects a boolean, got {type(value).__name__}"
+    elif expected is int:
+        if not isinstance(value, int) or isinstance(value, bool):
+            return f"'{field}' expects an integer, got {type(value).__name__}"
+    elif expected is list:
+        if not isinstance(value, list) or not all(isinstance(x, str) for x in value):
+            return f"'{field}' expects a list of strings, got {type(value).__name__}"
+    elif not isinstance(value, str):
+        return f"'{field}' expects a string, got {type(value).__name__}"
+    return None
 
 
 def validate_pairing(action, insight) -> list[str]:

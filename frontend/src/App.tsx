@@ -1,6 +1,6 @@
 import { useState } from "react";
 import {
-  AppBar, Toolbar, Typography, Button, Container, Box, Select, MenuItem, Divider,
+  AppBar, Toolbar, Typography, Button, Container, Box, Select, MenuItem,
   Chip, CircularProgress, Tooltip, IconButton, Dialog, DialogTitle, DialogActions, Alert, Snackbar, Stack,
 } from "@mui/material";
 import DeleteIcon from "@mui/icons-material/Delete";
@@ -9,31 +9,36 @@ import { api } from "./api";
 import { useAuth } from "./AuthContext";
 import { PilotProvider, usePilot } from "./PilotContext";
 import Login from "./Login";
-import CreatePilotDialog from "./CreatePilotDialog";
 import ActionsList from "./pages/ActionsList";
 import ActionEditor from "./pages/ActionEditor";
 import InsightsList from "./pages/InsightsList";
 import InsightEditor from "./pages/InsightEditor";
 import ReviewView from "./pages/ReviewView";
-import MergeView from "./pages/MergeView";
+import InteractionsView from "./pages/InteractionsView";
 import AuditLog from "./pages/AuditLog";
 import ManageUsers from "./pages/ManageUsers";
+import PilotsAdmin from "./pages/PilotsAdmin";
 import SchemaReference from "./pages/SchemaReference";
-import UtilityContentView from "./pages/UtilityContentView";
 import Dashboard from "./pages/Dashboard";
 
 function AuthenticatedApp() {
   const { user, logout } = useAuth();
   const { pilotId, pilots, setPilotId, refreshPilots } = usePilot();
-  const [createOpen, setCreateOpen] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const role = user!.role;
 
   const selectablePilots = pilots.filter((p) => !p.is_master);
   const currentPilot = selectablePilots.find((p) => p.id === pilotId);
-  const showActions = role !== "utility" || user!.content_scope !== "insights";
-  const showInsights = role !== "utility" || user!.content_scope !== "actions";
+  // Admin always sees all 3 tabs, even with zero rows — otherwise there'd be
+  // no way to discover an empty pilot needs content, or to reach Interactions
+  // at all to create the first one (Merge All / upload) from its Actions/
+  // Insights. tpm_csm/utility still only see a tab once it has something in it.
+  const showActions = role === "admin"
+    || ((role !== "utility" || user!.content_scope !== "insights") && (currentPilot?.action_count ?? 0) > 0);
+  const showInsights = role === "admin"
+    || ((role !== "utility" || user!.content_scope !== "actions") && (currentPilot?.insight_count ?? 0) > 0);
+  const showInteractions = role === "admin";
 
   const deletePilot = async () => {
     if (!pilotId) return;
@@ -65,19 +70,11 @@ function AuthenticatedApp() {
           </Stack>
           <Select
             size="small" value={pilotId ?? ""} displayEmpty sx={{ minWidth: 180 }}
-            onChange={(e) => {
-              const value = e.target.value as number | "__new__";
-              if (value === "__new__") setCreateOpen(true);
-              else setPilotId(Number(value));
-            }}
+            onChange={(e) => setPilotId(Number(e.target.value))}
           >
             {selectablePilots.map((p) => (
               <MenuItem key={p.id} value={p.id}>{p.name} ({p.code})</MenuItem>
             ))}
-            {role === "admin" && [
-              <Divider key="div" />,
-              <MenuItem key="new" value="__new__">+ Create new pilot…</MenuItem>,
-            ]}
           </Select>
           {role === "admin" && currentPilot && (
             <Tooltip title={`Delete ${currentPilot.name}`}>
@@ -90,9 +87,10 @@ function AuthenticatedApp() {
           <Button component={Link} to="/">Dashboard</Button>
           {showActions && <Button component={Link} to="/actions">Actions</Button>}
           {showInsights && <Button component={Link} to="/insights">Insights</Button>}
-          {role === "admin" && <Button component={Link} to="/merge">Merge</Button>}
+          {showInteractions && <Button component={Link} to="/interactions">Interactions</Button>}
           {role !== "utility" && <Button component={Link} to="/audit-log">Audit Log</Button>}
           {role === "admin" && <Button component={Link} to="/users">Users</Button>}
+          {role === "admin" && <Button component={Link} to="/pilots">Pilots</Button>}
           {role === "admin" && <Button component={Link} to="/schema">Schema</Button>}
           <Chip size="small" label={`${user!.username} · ${role}`} sx={{ whiteSpace: "nowrap" }} />
           <Button size="small" onClick={logout}>Logout</Button>
@@ -102,20 +100,20 @@ function AuthenticatedApp() {
         {pilotId && (
           <Routes>
             <Route path="/" element={<Dashboard />} />
-            <Route path="/actions" element={role === "utility" ? <UtilityContentView kind="action" /> : <ActionsList />} />
-            <Route path="/insights" element={role === "utility" ? <UtilityContentView kind="insight" /> : <InsightsList />} />
+            <Route path="/actions" element={<ActionsList />} />
+            <Route path="/insights" element={<InsightsList />} />
             {role !== "utility" && <Route path="/actions/:id" element={<ActionEditor />} />}
             {role !== "utility" && <Route path="/actions/:id/review" element={<ReviewView kind="action" />} />}
             {role !== "utility" && <Route path="/insights/:id" element={<InsightEditor />} />}
             {role !== "utility" && <Route path="/insights/:id/review" element={<ReviewView kind="insight" />} />}
-            {role === "admin" && <Route path="/merge" element={<MergeView />} />}
+            {role === "admin" && <Route path="/interactions" element={<InteractionsView />} />}
             {role !== "utility" && <Route path="/audit-log" element={<AuditLog />} />}
             {role === "admin" && <Route path="/users" element={<ManageUsers />} />}
+            {role === "admin" && <Route path="/pilots" element={<PilotsAdmin />} />}
             {role === "admin" && <Route path="/schema" element={<SchemaReference />} />}
           </Routes>
         )}
       </Container>
-      <CreatePilotDialog open={createOpen} onClose={() => setCreateOpen(false)} />
       <Dialog open={deleteConfirm} onClose={() => setDeleteConfirm(false)}>
         <DialogTitle>Delete pilot "{currentPilot?.name}"? This deletes all its actions, insights, and interactions — can't be undone.</DialogTitle>
         <DialogActions>

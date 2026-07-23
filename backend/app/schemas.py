@@ -10,6 +10,9 @@ class PilotOut(BaseModel):
     code: str
     name: str
     is_master: bool
+    action_count: int = 0
+    insight_count: int = 0
+    interaction_count: int = 0
 
 
 class PilotCreateIn(BaseModel):
@@ -150,6 +153,12 @@ class InteractionCreateIn(BaseModel):
     insight_item_id: int
 
 
+class InteractionUpdateIn(BaseModel):
+    insight_semantic: str | None = None
+    insight_text: str | None = None
+    action: str | None = None
+
+
 class InteractionOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
@@ -160,6 +169,38 @@ class InteractionOut(BaseModel):
     export_payload: str | None = None
     created_by_role: str | None = None
     created_at: datetime
+
+    # Computed via interaction_logic.compute_fields() — the PE
+    # generate_nbi_configs.py 20-column schema. insight_semantic/insight_text/
+    # action reflect this interaction's own override if set, else fall back
+    # to the source Insight/Action's field.
+    nbi_id: str
+    insight_id: str
+    action_id: str
+    insight_semantic: str | None = None
+    insight_text: str | None = None
+    action: str | None = None
+    tag_insight: str | None = None
+    tag_action: str | None = None
+    tag_generic: str | None = None
+    tag_objective: str | None = None
+    var_i_name: str | None = None
+    filter_utility: str | None = None
+    filter_ownership: str | None = None
+    filter_season: str | None = None
+    nbi_family: str | None = None
+    nbi_type: str | None = None
+    nbi_fuel_type: str | None = None
+    nbi_appliance: str | None = None
+    min: int | None = None
+    max: int | None = None
+    seasonal_suffix: str | None = None
+
+
+class BulkMergeOut(BaseModel):
+    created: int
+    skipped_existing: int
+    candidates_considered: int
 
 
 class AuditLogOut(BaseModel):

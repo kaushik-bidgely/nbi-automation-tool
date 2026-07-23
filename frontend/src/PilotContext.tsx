@@ -1,7 +1,10 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { api } from "./api";
 
-type Pilot = { id: number; code: string; name: string; is_master: boolean };
+type Pilot = {
+  id: number; code: string; name: string; is_master: boolean;
+  action_count: number; insight_count: number; interaction_count: number;
+};
 
 const PilotContext = createContext<{
   pilotId: number | null;

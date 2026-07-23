@@ -18,6 +18,21 @@ class Pilot(Base):
     actions = relationship("ActionItem", back_populates="pilot", cascade="all, delete-orphan")
     insights = relationship("InsightItem", back_populates="pilot", cascade="all, delete-orphan")
 
+    # Powers the nav bar's per-pilot "hide this tab if empty" behavior (App.tsx) —
+    # simple len() over the relationship rather than a COUNT query, since pilot
+    # counts and per-pilot row counts are both small at this app's scale.
+    @property
+    def action_count(self) -> int:
+        return len(self.actions)
+
+    @property
+    def insight_count(self) -> int:
+        return len(self.insights)
+
+    @property
+    def interaction_count(self) -> int:
+        return len(self.interaction_records)
+
 
 class User(Base):
     __tablename__ = "users"
@@ -194,12 +209,31 @@ class InteractionRecord(Base):
     action_item_id = Column(Integer, ForeignKey("action_items.id"), nullable=False)
     insight_item_id = Column(Integer, ForeignKey("insight_items.id"), nullable=False)
 
-    status = Column(String, default="merged")  # merged | exported
+    # Same 4-stage lifecycle as ActionItem/InsightItem (2026-07-22) — replaces
+    # the earlier merged/exported status, which only tracked whether a CSV had
+    # ever been pulled, not a real QA state. Existing rows were migrated to
+    # "draft" as a one-time backfill.
+    status = Column(String, default="draft")  # draft | ready_for_qa | published | modified
     export_payload = Column(Text)  # CSV/JSON snapshot generated at merge time
     created_by_role = Column(String)
     created_at = Column(DateTime, default=datetime.utcnow)
 
-    pilot = relationship("Pilot")
+    # Per-interaction overrides for the 3 fields the PE config sheet treats as
+    # editable at the pairing level (interaction_logic.compute_fields falls
+    # back to the source Action/Insight's own field when these are unset) —
+    # editing them here does NOT touch the shared Action/Insight record.
+    action_text_override = Column(Text)
+    insight_semantic_override = Column(Text)
+    insight_text_override = Column(Text)
+
+    # Set when this interaction represents the synthetic "seasonal" variant of
+    # action_item (ac/sh appliance actions get a Summer/Winter Seasonal or
+    # Program counterpart per generate_nbi_configs.py's add_seasonal_actions) —
+    # None for a regular pairing. Lets one real ActionItem back two distinct
+    # InteractionRecords (base + seasonal) without a second DB row.
+    seasonal_suffix = Column(String, nullable=True)  # None | "S" | "W"
+
+    pilot = relationship("Pilot", backref="interaction_records")
     # backref creates .interactions on ActionItem/InsightItem — the basis for
     # the computed `merged` property on each, so merge state is queryable
     # without a stored, driftable status value.

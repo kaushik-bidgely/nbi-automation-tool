@@ -48,17 +48,20 @@ ADMIN_ONLY_ACTIONS = {
 # (external, read-only, scoped per-account to specific pilots/content/channel).
 
 
-def action_editable_fields(role: str) -> set:
+def action_editable_fields(role: str, channel_scope: str | None = None) -> set:
     # "status" is deliberately excluded here (2026-07-06) — it now moves only
     # through the dedicated submit/unlock/publish endpoints in main.py, which
     # enforce the Draft/Ready-for-QA/Published/Modified transition rules.
     # Allowing it through the generic PATCH would let Admin skip those rules.
-    perms = rbac.resolve_permissions(rbac.ACTION_FIELD_MATRIX, role)
+    # channel_scope matters only for utility (2026-07-22, once utility gained
+    # edit rights on channel-gated content fields) — resolve_permissions
+    # ignores it for every other role.
+    perms = rbac.resolve_permissions(rbac.ACTION_FIELD_MATRIX, role, channel_scope)
     return {f for f, p in perms.items() if p == rbac.Permission.EDIT}
 
 
-def insight_editable_fields(role: str) -> set:
-    perms = rbac.resolve_permissions(rbac.INSIGHT_FIELD_MATRIX, role)
+def insight_editable_fields(role: str, channel_scope: str | None = None) -> set:
+    perms = rbac.resolve_permissions(rbac.INSIGHT_FIELD_MATRIX, role, channel_scope)
     return {f for f, p in perms.items() if p == rbac.Permission.EDIT}
 
 

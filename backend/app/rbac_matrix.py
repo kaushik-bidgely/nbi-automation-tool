@@ -81,15 +81,15 @@ class FieldRule:
 
 ACTION_FIELD_MATRIX: list[FieldRule] = [
     # --- content: admin/tpm_csm edit, utility view (channel-gated) ---
-    FieldRule("description", Category.CONTENT, Permission.EDIT, Permission.EDIT, Permission.VIEW, channel="email",
+    FieldRule("description", Category.CONTENT, Permission.EDIT, Permission.EDIT, Permission.EDIT, channel="email",
               description="Main email body copy for this action — the primary explanatory text shown in the Email/Web channel."),
-    FieldRule("subject_line_email", Category.CONTENT, Permission.EDIT, Permission.EDIT, Permission.VIEW, channel="email",
+    FieldRule("subject_line_email", Category.CONTENT, Permission.EDIT, Permission.EDIT, Permission.EDIT, channel="email",
               description="Email subject line for this action."),
-    FieldRule("footer_disclaimer", Category.CONTENT, Permission.EDIT, Permission.EDIT, Permission.VIEW, channel="email",
+    FieldRule("footer_disclaimer", Category.CONTENT, Permission.EDIT, Permission.EDIT, Permission.EDIT, channel="email",
               description="Legal/disclaimer text shown in the email footer (e.g. \"All percentages are rounded to the nearest percent.\")."),
-    FieldRule("short_desc", Category.CONTENT, Permission.EDIT, Permission.EDIT, Permission.VIEW, channel="paper",
+    FieldRule("short_desc", Category.CONTENT, Permission.EDIT, Permission.EDIT, Permission.EDIT, channel="paper",
               description="Short paper-channel description. Max 110 chars, required before this action can move to Ready for QA."),
-    FieldRule("title", Category.CONTENT, Permission.EDIT, Permission.EDIT, Permission.VIEW, channel="paper",
+    FieldRule("title", Category.CONTENT, Permission.EDIT, Permission.EDIT, Permission.EDIT, channel="paper",
               description="Paper-channel headline/title. Max 55 chars, required before Ready for QA."),
     FieldRule("subject_title_paper", Category.CONTENT, Permission.EDIT, Permission.EDIT, Permission.VIEW, channel="paper",
               description="Paper-channel subject/title line, distinct from the shorter `title` field."),
@@ -161,13 +161,13 @@ ACTION_FIELD_MATRIX: list[FieldRule] = [
 
 INSIGHT_FIELD_MATRIX: list[FieldRule] = [
     # --- content ---
-    FieldRule("subject_line", Category.CONTENT, Permission.EDIT, Permission.EDIT, Permission.VIEW, channel="email",
+    FieldRule("subject_line", Category.CONTENT, Permission.EDIT, Permission.EDIT, Permission.EDIT, channel="email",
               description="Email subject line for this insight."),
-    FieldRule("insight_text", Category.CONTENT, Permission.EDIT, Permission.EDIT, Permission.VIEW, channel="email",
+    FieldRule("insight_text", Category.CONTENT, Permission.EDIT, Permission.EDIT, Permission.EDIT, channel="email",
               description="Main email body copy for this insight."),
-    FieldRule("insight_semantic", Category.CONTENT, Permission.EDIT, Permission.EDIT, Permission.VIEW, channel="paper",
+    FieldRule("insight_semantic", Category.CONTENT, Permission.EDIT, Permission.EDIT, Permission.EDIT, channel="paper",
               description="Paper-channel body copy. Max 135 chars, required before this insight can move to Ready for QA."),
-    FieldRule("paper_text", Category.CONTENT, Permission.EDIT, Permission.EDIT, Permission.VIEW, channel="paper",
+    FieldRule("paper_text", Category.CONTENT, Permission.EDIT, Permission.EDIT, Permission.EDIT, channel="paper",
               description="Additional paper-channel body copy, distinct from insight_semantic."),
 
     # --- image ---

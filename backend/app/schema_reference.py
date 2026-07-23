@@ -133,3 +133,63 @@ def get_insight_schema() -> list[dict]:
         INSIGHT_FIELD_MATRIX, InsightItem, INSIGHT_FIELD_VOCAB,
         validation.INSIGHT_CHAR_LIMITS, validation.INSIGHT_REQUIRED_FOR_SUBMIT,
     )
+
+
+# Interactions have no rbac_matrix.py equivalent — there's no per-field, per-role
+# permission split (the whole entity is admin-edit / tpm_csm-view / utility-none,
+# see main.py's interaction endpoints), and most fields are computed live from
+# the linked Action/Insight rather than being real InteractionRecord columns
+# (see interaction_logic.compute_fields). So this is hand-authored rather than
+# introspected — the `assert` below at least guarantees it can't silently drift
+# out of sync with the real field list interaction_logic.py actually computes.
+INTERACTION_FIELD_DOCS: dict[str, tuple[str, str]] = {
+    "id": ("generated", "This interaction record's own database id."),
+    "pilot_id": ("generated", "The pilot this interaction belongs to."),
+    "nbi_id": ("generated", "insight_id + \"_\" + action_id — the unique key for this pairing, matching the real PE config sheet's nbi_id column."),
+    "insight_id": ("internal", "The paired Insight's natural-key ID."),
+    "action_id": ("internal", "The paired Action's natural-key ID — includes the _S/_W seasonal suffix for a seasonal-variant pairing (see nbi_type)."),
+    "insight_semantic": ("content", "Editable per-interaction — defaults to the Insight's own Insight Semantic until overridden here; overriding it does not change the source Insight."),
+    "insight_text": ("content", "Editable per-interaction — defaults to the Insight's own Insight Text until overridden here; overriding it does not change the source Insight."),
+    "action": ("content", "Editable per-interaction — defaults to the Action's own description until overridden here; overriding it does not change the source Action."),
+    "tag_insight": ("internal", "The paired Insight's generated tag string."),
+    "tag_action": ("internal", "The paired Action's generated tag string."),
+    "tag_generic": ("internal", "The shared appliance code if the Action and Insight's appliance fields match, else blank."),
+    "tag_objective": ("internal", "The Action's utility-objective tag (e.g. ee)."),
+    "var_i_name": ("internal", "The Insight's variable name — percentage | percentile | dollar."),
+    "filter_utility": ("generated", "Always blank — the real PE generation script hardcodes this, it's never derived from source data."),
+    "filter_ownership": ("internal", "The Action's ownership filter."),
+    "filter_season": ("internal", "The Action's season filter."),
+    "nbi_family": ("internal", "The Action's NBI family (e.g. EE)."),
+    "nbi_type": ("internal", "The Action's NBI type — becomes SummerSeasonal/WinterSeasonal/SummerProgram/WinterProgram for a seasonal-variant pairing, else the Action's own value."),
+    "nbi_fuel_type": ("internal", "The Action's fuel type — ELECTRIC | GAS."),
+    "nbi_appliance": ("internal", "Same as tag_generic — the shared appliance code."),
+    "min": ("internal", "The paired Insight's min_value, if any."),
+    "max": ("internal", "The paired Insight's max_value, if any."),
+    "seasonal_suffix": ("generated", "S | W if this interaction represents the synthetic seasonal variant of its Action, else blank."),
+    "status": ("generated", "merged | exported — whether this interaction has been through the CSV export step."),
+    "created_by_role": ("generated", "The role of whoever created this interaction."),
+    "created_at": ("generated", "When this interaction was created."),
+}
+
+
+def get_interaction_schema() -> list[dict]:
+    from .interaction_logic import FIELDS as INTERACTION_COMPUTED_FIELDS
+
+    all_fields = ["id", "pilot_id", *INTERACTION_COMPUTED_FIELDS, "seasonal_suffix", "status", "created_by_role", "created_at"]
+    assert all(f in INTERACTION_FIELD_DOCS for f in all_fields), "undocumented interaction field"
+
+    return [
+        {
+            "field": field,
+            "category": INTERACTION_FIELD_DOCS[field][0],
+            "channel": None,
+            "description": INTERACTION_FIELD_DOCS[field][1],
+            "type": "integer" if field in ("id", "pilot_id", "min", "max") else ("datetime" if field == "created_at" else "string"),
+            "list_valued": False,
+            "accepted_values": None,
+            "char_limit": None,
+            "required_for_submit": False,
+            "shown_in_ui": True,
+        }
+        for field in all_fields
+    ]

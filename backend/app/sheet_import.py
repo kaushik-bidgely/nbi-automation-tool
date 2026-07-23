@@ -20,6 +20,43 @@ ACTIONS_HEADER_ROW = 5
 INSIGHTS_HEADER_ROW = 4
 
 
+class SheetFormatError(ValueError):
+    """An uploaded file doesn't match the expected sheet name/column layout.
+    Caught in main.py's upload endpoints and surfaced as a 422 with this
+    message verbatim — never let the raw pandas/openpyxl exception (e.g.
+    "Worksheet named 'Actions' not found") propagate as an opaque 500."""
+
+
+def _read_sheet(path_or_buffer, expected_name: str, header_row: int):
+    """Resolves which sheet in the uploaded workbook to read: the exact
+    expected_name if present, the sole sheet if the workbook only has one
+    (regardless of what it's named — there's nothing else it could be, so no
+    ambiguity), otherwise a clear error listing the sheets found so the user
+    can rename the right tab instead of hitting an opaque failure."""
+    try:
+        xl = pd.ExcelFile(path_or_buffer)
+    except Exception as e:
+        raise SheetFormatError(f"Couldn't read this file ({e}). Make sure it's a valid, uncorrupted .xlsx workbook.") from e
+
+    sheet_names = xl.sheet_names
+    if expected_name in sheet_names:
+        resolved = expected_name
+    elif len(sheet_names) == 1:
+        resolved = sheet_names[0]
+    else:
+        raise SheetFormatError(
+            f"Couldn't find a sheet named \"{expected_name}\" in this workbook (found: {', '.join(sheet_names)}). "
+            f"Since it has more than one sheet, rename the one with the {expected_name} data to \"{expected_name}\" and re-upload."
+        )
+
+    try:
+        return xl.parse(sheet_name=resolved, header=header_row)
+    except Exception as e:
+        raise SheetFormatError(
+            f"Couldn't read this as an {expected_name} sheet: {e}. Make sure the column layout matches the master template."
+        ) from e
+
+
 def _first(*vals):
     for v in vals:
         if pd.notna(v) and str(v).strip():
@@ -38,10 +75,12 @@ def _id_str(v) -> str:
 
 
 def import_actions(db, path_or_buffer, pilot_id: int) -> dict:
-    df = pd.read_excel(path_or_buffer, sheet_name="Actions", header=ACTIONS_HEADER_ROW)
+    df = _read_sheet(path_or_buffer, "Actions", ACTIONS_HEADER_ROW)
+
     imported = 0
     skipped_published = 0
-    for _, row in df.iterrows():
+    for i, row in df.iterrows():
+      try:
         if pd.isna(row.iloc[0]):
             continue
         action_id = _id_str(row.iloc[0])
@@ -55,6 +94,7 @@ def import_actions(db, path_or_buffer, pilot_id: int) -> dict:
             # that lifecycle guarantee.
             skipped_published += 1
             continue
+        was_ready_for_qa = bool(item and item.status == "ready_for_qa")
 
         appliance = _first(row.iloc[4])
         raw_tag_string = _first(row.iloc[25])
@@ -101,15 +141,26 @@ def import_actions(db, path_or_buffer, pilot_id: int) -> dict:
         item.strike_high = parsed["strike_high"]
         item.extra_tags = extra_tags
         item.tag_string = build_tag_string(item)
+        if was_ready_for_qa:
+            # Same rule the generic PATCH endpoint enforces: an edit
+            # invalidates whatever QA review already happened.
+            item.status = "draft"
         imported += 1
+      except (IndexError, KeyError) as e:
+        raise SheetFormatError(
+            f"Row {i + 1} doesn't match the expected Actions column layout ({e}). "
+            "Make sure this file matches the master template's column count and order."
+        ) from e
     return {"imported": imported, "skipped_published": skipped_published}
 
 
 def import_insights(db, path_or_buffer, pilot_id: int) -> dict:
-    df = pd.read_excel(path_or_buffer, sheet_name="Insights", header=INSIGHTS_HEADER_ROW)
+    df = _read_sheet(path_or_buffer, "Insights", INSIGHTS_HEADER_ROW)
+
     imported = 0
     skipped_published = 0
-    for _, row in df.iterrows():
+    for i, row in df.iterrows():
+      try:
         if pd.isna(row.iloc[1]):
             continue
         insight_id = _id_str(row.iloc[1])
@@ -118,6 +169,7 @@ def import_insights(db, path_or_buffer, pilot_id: int) -> dict:
         if item and item.status == "published":
             skipped_published += 1
             continue
+        was_ready_for_qa = bool(item and item.status == "ready_for_qa")
 
         appliance = _first(row.iloc[0])
         raw_tag_string = _first(row.iloc[16])
@@ -158,5 +210,14 @@ def import_insights(db, path_or_buffer, pilot_id: int) -> dict:
         item.max_value = parsed["max_value"]
         item.extra_tags = extra_tags
         item.tag_string = build_insight_tag_string(item)
+        if was_ready_for_qa:
+            # Same rule the generic PATCH endpoint enforces: an edit
+            # invalidates whatever QA review already happened.
+            item.status = "draft"
         imported += 1
+      except (IndexError, KeyError) as e:
+        raise SheetFormatError(
+            f"Row {i + 1} doesn't match the expected Insights column layout ({e}). "
+            "Make sure this file matches the master template's column count and order."
+        ) from e
     return {"imported": imported, "skipped_published": skipped_published}

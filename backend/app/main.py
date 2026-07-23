@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
-from . import models, schemas, validation, permissions
+from . import models, schemas, validation, permissions, interaction_logic
 from .auth import hash_password, verify_password, generate_token
 from .database import Base, engine, get_db
 from .permissions import (
@@ -21,10 +21,11 @@ from .permissions import (
     resolve_action_permissions, resolve_insight_permissions, filter_response,
 )
 from .rbac_matrix import ACTION_ALWAYS_INCLUDED, INSIGHT_ALWAYS_INCLUDED
-from .schema_reference import get_action_schema, get_insight_schema
+from .schema_reference import get_action_schema, get_insight_schema, get_interaction_schema
 from .seed import clone_pilot_content
 from .sheet_export import export_actions_csv, export_insights_csv, sanitize_csv_cell
-from .sheet_import import import_actions, import_insights
+from .sheet_import import import_actions, import_insights, SheetFormatError
+from .interaction_import import import_interactions
 from .tag_logic import build_tag_string, build_insight_tag_string
 
 Base.metadata.create_all(bind=engine)
@@ -184,7 +185,7 @@ def get_schema_reference(user: models.User = Depends(get_current_user)):
     schema_reference.py. Not a permissions endpoint (that's the pair above);
     this is category/channel/type/accepted-values/description per field."""
     require_role(user, "admin")
-    return {"actions": get_action_schema(), "insights": get_insight_schema()}
+    return {"actions": get_action_schema(), "insights": get_insight_schema(), "interactions": get_interaction_schema()}
 
 
 # ---------- User management (Admin-only) ----------
@@ -231,6 +232,9 @@ def update_user(user_id: int, body: schemas.UserUpdateIn, db: Session = Depends(
             target.allowed_pilot_ids = []  # scoping only means something for utility accounts
     if body.password is not None:
         target.password_hash = hash_password(body.password)
+        # An old bearer token would otherwise keep authenticating as this user
+        # under their previous password indefinitely (up to SESSION_TTL_HOURS).
+        db.query(models.Session).filter_by(user_id=target.id).delete()
     if body.allowed_pilot_ids is not None:
         target.allowed_pilot_ids = body.allowed_pilot_ids
     if body.content_scope is not None:
@@ -250,6 +254,7 @@ def delete_user(user_id: int, db: Session = Depends(get_db), user: models.User =
         raise HTTPException(404, "User not found")
     if target.id == user.id:
         raise HTTPException(400, "Can't delete your own account while logged in as it")
+    db.query(models.Session).filter_by(user_id=target.id).delete()
     db.delete(target)
     db.commit()
     return {"ok": True}
@@ -293,6 +298,23 @@ def clone_from_master(pilot_id: int, db: Session = Depends(get_db), user: models
     return pilot
 
 
+def _import_or_422(import_fn, db: Session, contents: bytes, pilot_id: int) -> dict:
+    """Runs a sheet_import.py/interaction_import.py import function and turns
+    any parse failure into a clear 422 instead of an opaque 500 — a bad sheet
+    name, wrong column layout, or corrupt file are all user-fixable upload
+    mistakes, not server errors."""
+    try:
+        result = import_fn(db, io.BytesIO(contents), pilot_id)
+        db.commit()
+        return result
+    except SheetFormatError as e:
+        db.rollback()
+        raise HTTPException(422, str(e))
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(422, f"Couldn't process this file: {e}")
+
+
 @app.post("/api/pilots/{pilot_id}/upload/actions")
 async def upload_actions(pilot_id: int, file: UploadFile = File(...), db: Session = Depends(get_db),
                           user: models.User = Depends(get_current_user)):
@@ -301,9 +323,7 @@ async def upload_actions(pilot_id: int, file: UploadFile = File(...), db: Sessio
     if not pilot:
         raise HTTPException(404, "Pilot not found")
     contents = await file.read()
-    result = import_actions(db, io.BytesIO(contents), pilot_id)
-    db.commit()
-    return result
+    return _import_or_422(import_actions, db, contents, pilot_id)
 
 
 @app.post("/api/pilots/{pilot_id}/upload/insights")
@@ -314,9 +334,22 @@ async def upload_insights(pilot_id: int, file: UploadFile = File(...), db: Sessi
     if not pilot:
         raise HTTPException(404, "Pilot not found")
     contents = await file.read()
-    result = import_insights(db, io.BytesIO(contents), pilot_id)
-    db.commit()
-    return result
+    return _import_or_422(import_insights, db, contents, pilot_id)
+
+
+@app.post("/api/pilots/{pilot_id}/upload/interactions")
+async def upload_interactions(pilot_id: int, file: UploadFile = File(...), db: Session = Depends(get_db),
+                               user: models.User = Depends(get_current_user)):
+    """Accepts a CSV in the same 20-column schema as this app's own
+    /api/interactions/{id}/export (and the real PE config sheet) —
+    interaction_import.py resolves each row's insight_id/action_id against
+    this pilot's existing Actions/Insights and upserts an InteractionRecord."""
+    require_role(user, "admin")
+    pilot = db.get(models.Pilot, pilot_id)
+    if not pilot:
+        raise HTTPException(404, "Pilot not found")
+    contents = await file.read()
+    return _import_or_422(import_interactions, db, contents, pilot_id)
 
 
 @app.delete("/api/pilots/{pilot_id}")
@@ -380,18 +413,20 @@ def review_action(action_id: int, db: Session = Depends(get_db), user: models.Us
 @app.patch("/api/actions/{action_id}", response_model=schemas.ActionOut)
 def update_action(action_id: int, body: schemas.UpdateFieldsIn, db: Session = Depends(get_db),
                    user: models.User = Depends(get_current_user)):
-    require_not_utility(user)
     obj = db.get(models.ActionItem, action_id)
     if not obj:
         raise HTTPException(404, "Action not found")
+    check_pilot_access(user, obj.pilot_id, "actions")
     if obj.status == "published":
         raise HTTPException(409, "This action is Published — Unlock it first before editing.")
-    allowed = action_editable_fields(user.role)
+    allowed = action_editable_fields(user.role, user.channel_scope)
     if "tag_string" in body.fields:
         raise HTTPException(403, "tag_string is generated from the structured tag fields — edit those instead")
     for field, value in body.fields.items():
         if field not in allowed:
             raise HTTPException(403, f"'{field}' is not editable by role '{user.role}'")
+        if err := validation.validate_field_type(field, value, validation.ACTION_FIELD_TYPES):
+            raise HTTPException(422, err)
         log_change(db, "action_item", action_id, field, getattr(obj, field), value, user.role)
         setattr(obj, field, value)
     if set(body.fields) & (permissions.ACTION_TAG_FIELDS | {"appliance"}):
@@ -503,15 +538,18 @@ def publish_actions(pilot_id: int, body: schemas.PublishIn, db: Session = Depend
 
 
 @app.get("/api/pilots/{pilot_id}/actions/export")
-def export_actions_sheet(pilot_id: int, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
-    """Read-only snapshot of everything at Ready for QA or later (i.e. not
-    Draft), in the same master-sheet CSV shape Publish produces — for
-    checking what's ready without triggering Publish's Ready for QA ->
-    Published transition. Admin-only, matching Publish and the rest of
-    ADMIN_ONLY_ACTIONS' "export"."""
+def export_actions_sheet(pilot_id: int, statuses: str | None = None, db: Session = Depends(get_db),
+                          user: models.User = Depends(get_current_user)):
+    """Read-only snapshot of whichever statuses are requested (defaults to
+    everything not Draft, matching the pre-2026-07-22 fixed behavior), in the
+    same master-sheet CSV shape Publish produces — for checking what's ready
+    without triggering Publish's Ready for QA -> Published transition.
+    Admin-only, matching Publish and the rest of ADMIN_ONLY_ACTIONS' "export".
+    `statuses` is a comma-separated subset of draft/ready_for_qa/published/modified."""
     require_role(user, "admin")
+    status_list = statuses.split(",") if statuses else ["ready_for_qa", "published", "modified"]
     rows = db.query(models.ActionItem).filter(
-        models.ActionItem.pilot_id == pilot_id, models.ActionItem.status != "draft",
+        models.ActionItem.pilot_id == pilot_id, models.ActionItem.status.in_(status_list),
     ).all()
     return {"filename": f"pilot_{pilot_id}_actions_export.csv", "csv": export_actions_csv(rows)}
 
@@ -553,18 +591,20 @@ def review_insight(insight_id: int, db: Session = Depends(get_db), user: models.
 @app.patch("/api/insights/{insight_id}", response_model=schemas.InsightOut)
 def update_insight(insight_id: int, body: schemas.UpdateFieldsIn, db: Session = Depends(get_db),
                     user: models.User = Depends(get_current_user)):
-    require_not_utility(user)
     obj = db.get(models.InsightItem, insight_id)
     if not obj:
         raise HTTPException(404, "Insight not found")
+    check_pilot_access(user, obj.pilot_id, "insights")
     if obj.status == "published":
         raise HTTPException(409, "This insight is Published — Unlock it first before editing.")
-    allowed = insight_editable_fields(user.role)
+    allowed = insight_editable_fields(user.role, user.channel_scope)
     if "tag_string" in body.fields:
         raise HTTPException(403, "tag_string is generated from the structured tag fields — edit those instead")
     for field, value in body.fields.items():
         if field not in allowed:
             raise HTTPException(403, f"'{field}' is not editable by role '{user.role}'")
+        if err := validation.validate_field_type(field, value, validation.INSIGHT_FIELD_TYPES):
+            raise HTTPException(422, err)
         log_change(db, "insight_item", insight_id, field, getattr(obj, field), value, user.role)
         setattr(obj, field, value)
     if set(body.fields) & (permissions.INSIGHT_TAG_FIELDS | {"appliance"}):
@@ -664,21 +704,48 @@ def publish_insights(pilot_id: int, body: schemas.PublishIn, db: Session = Depen
 
 
 @app.get("/api/pilots/{pilot_id}/insights/export")
-def export_insights_sheet(pilot_id: int, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+def export_insights_sheet(pilot_id: int, statuses: str | None = None, db: Session = Depends(get_db),
+                           user: models.User = Depends(get_current_user)):
     """Mirrors export_actions_sheet."""
     require_role(user, "admin")
+    status_list = statuses.split(",") if statuses else ["ready_for_qa", "published", "modified"]
     rows = db.query(models.InsightItem).filter(
-        models.InsightItem.pilot_id == pilot_id, models.InsightItem.status != "draft",
+        models.InsightItem.pilot_id == pilot_id, models.InsightItem.status.in_(status_list),
     ).all()
     return {"filename": f"pilot_{pilot_id}_insights_export.csv", "csv": export_insights_csv(rows)}
 
 
 # ---------- Interactions (Admin merge — replaces Script 1) ----------
 
+def _interaction_out(interaction: models.InteractionRecord) -> dict:
+    out = {
+        "id": interaction.id, "pilot_id": interaction.pilot_id,
+        "action_item_id": interaction.action_item_id, "insight_item_id": interaction.insight_item_id,
+        "status": interaction.status, "export_payload": interaction.export_payload,
+        "created_by_role": interaction.created_by_role, "created_at": interaction.created_at,
+    }
+    out.update(interaction_logic.compute_fields(interaction))
+    return out
+
+
+def _interactions_csv(rows: list[models.InteractionRecord]) -> str:
+    """The 20-column PE config schema for a set of interactions — shared by
+    the Download Sheet export and the Publish Selected action, same pattern
+    as export_actions_csv/export_insights_csv for the other two entities."""
+    payload = io.StringIO()
+    writer = csv.writer(payload)
+    writer.writerow(interaction_logic.FIELDS)
+    for row in rows:
+        fields = interaction_logic.compute_fields(row)
+        writer.writerow([sanitize_csv_cell(fields[f]) for f in interaction_logic.FIELDS])
+    return payload.getvalue()
+
+
 @app.get("/api/pilots/{pilot_id}/interactions", response_model=list[schemas.InteractionOut])
 def list_interactions(pilot_id: int, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
     require_not_utility(user)
-    return db.query(models.InteractionRecord).filter_by(pilot_id=pilot_id).all()
+    rows = db.query(models.InteractionRecord).filter_by(pilot_id=pilot_id).all()
+    return [_interaction_out(r) for r in rows]
 
 
 @app.post("/api/interactions", response_model=schemas.InteractionOut)
@@ -694,8 +761,11 @@ def create_interaction(body: schemas.InteractionCreateIn, db: Session = Depends(
     if action.pilot_id != insight.pilot_id:
         raise HTTPException(422, "Action and Insight belong to different pilots — can't merge across pilots")
 
+    # seasonal_suffix=None: manual single-merge always creates the base
+    # pairing — a co-existing bulk-created seasonal variant of the same
+    # action+insight (see bulk_merge_interactions) isn't a duplicate of this.
     existing = db.query(models.InteractionRecord).filter_by(
-        action_item_id=action.id, insight_item_id=insight.id,
+        action_item_id=action.id, insight_item_id=insight.id, seasonal_suffix=None,
     ).first()
     if existing:
         raise HTTPException(409, f"This Action + Insight pair is already merged (interaction #{existing.id})")
@@ -704,49 +774,176 @@ def create_interaction(body: schemas.InteractionCreateIn, db: Session = Depends(
     if pairing_issues:
         raise HTTPException(422, {"issues": pairing_issues})
 
-    payload = io.StringIO()
-    writer = csv.writer(payload)
-    writer.writerow([
-        "action_id", "insight_id", "nbi_family", "appliance", "fuel_type",
-        "title", "short_desc", "insight_semantic", "cta_text", "tag_string_action",
-        "tag_string_insight",
-    ])
-    writer.writerow([sanitize_csv_cell(v) for v in [
-        action.action_id, insight.insight_id, action.nbi_family, action.appliance,
-        action.fuel_type, action.title, action.short_desc, insight.insight_semantic,
-        action.cta_text, action.tag_string, insight.tag_string,
-    ]])
-
     record = models.InteractionRecord(
         pilot_id=action.pilot_id,
         action_item_id=action.id,
         insight_item_id=insight.id,
-        status="merged",
-        export_payload=payload.getvalue(),
+        status="draft",
         created_by_role=user.role,
     )
-    # Merge is independent of the Draft/Ready-for-QA/Published/Modified
-    # lifecycle (2026-07-06) — an action/insight's QA status is untouched by
-    # merging or un-merging it; `merged` (see models.py) reflects pairing
-    # state separately.
+    # The interaction's own Draft/Ready-for-QA/Published/Modified status
+    # (2026-07-22) is independent of the linked Action/Insight's own status —
+    # merging or un-merging never touches those.
     db.add(record)
+    db.flush()  # populate record.id before logging
+    log_change(db, "interaction_record", record.id, "status", None, "draft", user.role)
     db.commit()
     db.refresh(record)
-    return record
+    return _interaction_out(record)
 
 
-@app.get("/api/interactions/{interaction_id}/export")
-def export_interaction(interaction_id: int, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
-    """Stand-in for the real push to NBA_asset_data (Script 2) until Delivery/PE
-    confirm the actual logic — see 'Old NBI Automation Tool.md'. Returns a CSV
-    export today; swap for a direct API call once that mechanism is confirmed."""
+@app.post("/api/pilots/{pilot_id}/interactions/bulk-merge", response_model=schemas.BulkMergeOut)
+def bulk_merge_interactions(pilot_id: int, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    """Runs the full pairing rule engine (interaction_logic.py — ported from
+    PE's generate_nbi_configs.py) over every Action+Insight in this pilot and
+    creates an InteractionRecord for every pair that passes and isn't already
+    merged. Creates immediately, no preview step (by design)."""
+    require_role(user, "admin")
+
+    actions = db.query(models.ActionItem).filter_by(pilot_id=pilot_id).all()
+    insights = db.query(models.InsightItem).filter_by(pilot_id=pilot_id).all()
+    candidates = interaction_logic.generate_candidates(actions, insights)
+
+    existing_pairs = {
+        (r.action_item_id, r.insight_item_id, r.seasonal_suffix)
+        for r in db.query(models.InteractionRecord).filter_by(pilot_id=pilot_id).all()
+    }
+
+    created = 0
+    new_records = []
+    for action, insight, seasonal_suffix in candidates:
+        key = (action.id, insight.id, seasonal_suffix)
+        if key in existing_pairs:
+            continue
+        record = models.InteractionRecord(
+            pilot_id=pilot_id, action_item_id=action.id, insight_item_id=insight.id,
+            status="draft", created_by_role=user.role, seasonal_suffix=seasonal_suffix,
+        )
+        db.add(record)
+        new_records.append(record)
+        existing_pairs.add(key)
+        created += 1
+    db.flush()  # populate .id on each new record before logging
+    for record in new_records:
+        log_change(db, "interaction_record", record.id, "status", None, "draft", user.role)
+    db.commit()
+
+    return {
+        "created": created,
+        "skipped_existing": len(candidates) - created,
+        "candidates_considered": len(candidates),
+    }
+
+
+@app.post("/api/pilots/{pilot_id}/interactions/publish", response_model=schemas.PublishOut)
+def publish_interactions(pilot_id: int, body: schemas.PublishIn, db: Session = Depends(get_db),
+                          user: models.User = Depends(get_current_user)):
+    """Ready for QA -> Published, in bulk — mirrors publish_actions/
+    publish_insights, producing the same 20-column CSV the Download Sheet
+    button does (filtered to just the newly-published rows)."""
+    require_role(user, "admin")
+    rows = db.query(models.InteractionRecord).filter(
+        models.InteractionRecord.id.in_(body.ids), models.InteractionRecord.pilot_id == pilot_id,
+    ).all()
+    eligible = [r for r in rows if r.status == "ready_for_qa"]
+    skipped = [i for i in body.ids if i not in {r.id for r in eligible}]
+    for obj in eligible:
+        log_change(db, "interaction_record", obj.id, "status", obj.status, "published", user.role)
+        obj.status = "published"
+    csv_text = _interactions_csv(eligible)
+    db.commit()
+    return {
+        "filename": f"pilot_{pilot_id}_interactions_published.csv", "csv": csv_text,
+        "published_ids": [r.id for r in eligible], "skipped_ids": skipped,
+    }
+
+
+@app.get("/api/pilots/{pilot_id}/interactions/export")
+def export_interactions_sheet(pilot_id: int, statuses: str | None = None, db: Session = Depends(get_db),
+                               user: models.User = Depends(get_current_user)):
+    """Mirrors export_actions_sheet/export_insights_sheet — a pilot-level,
+    status-filtered download replacing the old per-interaction /export
+    (removed 2026-07-22 in favor of this one consistent download surface)."""
+    require_role(user, "admin")
+    status_list = statuses.split(",") if statuses else ["ready_for_qa", "published", "modified"]
+    rows = db.query(models.InteractionRecord).filter(
+        models.InteractionRecord.pilot_id == pilot_id, models.InteractionRecord.status.in_(status_list),
+    ).all()
+    return {"filename": f"pilot_{pilot_id}_interactions_export.csv", "csv": _interactions_csv(rows)}
+
+
+@app.patch("/api/interactions/{interaction_id}", response_model=schemas.InteractionOut)
+def update_interaction(interaction_id: int, body: schemas.InteractionUpdateIn, db: Session = Depends(get_db),
+                        user: models.User = Depends(get_current_user)):
+    """Edits the 3 per-interaction overrides only — never touches the shared
+    source Action/Insight record (see interaction_logic.compute_fields)."""
     require_role(user, "admin")
     obj = db.get(models.InteractionRecord, interaction_id)
     if not obj:
         raise HTTPException(404, "Interaction not found")
-    obj.status = "exported"
+    if obj.status == "published":
+        raise HTTPException(409, "This interaction is Published — Unlock it first before editing.")
+
+    changed = False
+    if body.insight_semantic is not None:
+        log_change(db, "interaction_record", interaction_id, "insight_semantic_override",
+                   obj.insight_semantic_override, body.insight_semantic, user.role)
+        obj.insight_semantic_override = body.insight_semantic
+        changed = True
+    if body.insight_text is not None:
+        log_change(db, "interaction_record", interaction_id, "insight_text_override",
+                   obj.insight_text_override, body.insight_text, user.role)
+        obj.insight_text_override = body.insight_text
+        changed = True
+    if body.action is not None:
+        log_change(db, "interaction_record", interaction_id, "action_text_override",
+                   obj.action_text_override, body.action, user.role)
+        obj.action_text_override = body.action
+        changed = True
+
+    # Same rule as ActionItem/InsightItem's generic PATCH: an edit invalidates
+    # whatever QA review already happened.
+    if changed and obj.status == "ready_for_qa":
+        log_change(db, "interaction_record", interaction_id, "status", obj.status, "draft", user.role)
+        obj.status = "draft"
+
     db.commit()
-    return {"filename": f"interaction_{interaction_id}.csv", "csv": obj.export_payload}
+    db.refresh(obj)
+    return _interaction_out(obj)
+
+
+@app.post("/api/interactions/{interaction_id}/submit", response_model=schemas.InteractionOut)
+def submit_interaction(interaction_id: int, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    """Moves Draft or Modified -> Ready for QA. Admin-only, unlike Actions/
+    Insights' /submit — Interactions have no Utility-visible equivalent."""
+    require_role(user, "admin")
+    obj = db.get(models.InteractionRecord, interaction_id)
+    if not obj:
+        raise HTTPException(404, "Interaction not found")
+    if obj.status not in ("draft", "modified"):
+        raise HTTPException(409, f"Only Draft or Modified interactions can move to Ready for QA (current status: {obj.status})")
+    log_change(db, "interaction_record", interaction_id, "status", obj.status, "ready_for_qa", user.role)
+    obj.status = "ready_for_qa"
+    db.commit()
+    db.refresh(obj)
+    return _interaction_out(obj)
+
+
+@app.post("/api/interactions/{interaction_id}/unlock", response_model=schemas.InteractionOut)
+def unlock_interaction(interaction_id: int, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    """Published -> Modified. Required before a Published interaction's
+    overrides can be edited again."""
+    require_role(user, "admin")
+    obj = db.get(models.InteractionRecord, interaction_id)
+    if not obj:
+        raise HTTPException(404, "Interaction not found")
+    if obj.status != "published":
+        raise HTTPException(409, f"Only Published interactions can be unlocked (current status: {obj.status})")
+    log_change(db, "interaction_record", interaction_id, "status", obj.status, "modified", user.role)
+    obj.status = "modified"
+    db.commit()
+    db.refresh(obj)
+    return _interaction_out(obj)
 
 
 @app.delete("/api/interactions/{interaction_id}")
@@ -758,6 +955,7 @@ def unmerge_interaction(interaction_id: int, db: Session = Depends(get_db), user
     obj = db.get(models.InteractionRecord, interaction_id)
     if not obj:
         raise HTTPException(404, "Interaction not found")
+    log_change(db, "interaction_record", interaction_id, "status", obj.status, "deleted", user.role)
     db.delete(obj)
     db.commit()
     return {"ok": True}
@@ -783,13 +981,21 @@ def get_audit_log(entity_type: str | None = None, entity_id: int | None = None,
 # registered above take precedence over this catch-all.
 
 FRONTEND_DIST = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
+FRONTEND_DIST_RESOLVED = FRONTEND_DIST.resolve()
 
 if FRONTEND_DIST.is_dir():
     app.mount("/assets", StaticFiles(directory=FRONTEND_DIST / "assets"), name="frontend-assets")
 
     @app.get("/{full_path:path}")
     def serve_frontend(full_path: str):
-        candidate = FRONTEND_DIST / full_path
-        if full_path and candidate.is_file():
+        # full_path is attacker-controlled and Starlette's {...:path} converter
+        # does not normalize ".."/absolute-looking segments in it — resolve()
+        # collapses those, and is_relative_to() enforces the same containment
+        # StaticFiles does internally for the /assets mount above. Anything
+        # that resolves outside FRONTEND_DIST (real traversal, not a genuine
+        # SPA route) falls through to index.html like any other non-matching
+        # path, rather than erroring.
+        candidate = (FRONTEND_DIST / full_path).resolve()
+        if full_path and candidate.is_relative_to(FRONTEND_DIST_RESOLVED) and candidate.is_file():
             return FileResponse(candidate)
         return FileResponse(FRONTEND_DIST / "index.html")
