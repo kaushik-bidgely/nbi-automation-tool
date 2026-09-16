@@ -4,19 +4,19 @@
     {
       "name": "backend",
       "runtimeExecutable": "bash",
-      "runtimeArgs": ["-c", "cd /Users/sasikaushikbattul/Projects/nbi-automation-tool/backend && source venv/bin/activate && uvicorn app.main:app --port 8000 --reload"],
+      "runtimeArgs": ["-c", "cd backend && source venv/bin/activate && uvicorn app.main:app --port 8000 --reload"],
       "port": 8000
     },
     {
       "name": "frontend",
       "runtimeExecutable": "bash",
-      "runtimeArgs": ["-c", "cd /Users/sasikaushikbattul/Projects/nbi-automation-tool/frontend && npm run dev -- --port 5173"],
+      "runtimeArgs": ["-c", "cd frontend && npm run dev -- --port 5173"],
       "port": 5173
     },
     {
       "name": "unified",
       "runtimeExecutable": "bash",
-      "runtimeArgs": ["-c", "cd /Users/sasikaushikbattul/Projects/nbi-automation-tool && ./run.sh"],
+      "runtimeArgs": ["-c", "./run.sh"],
       "port": 8010
     }
   ]
